@@ -84,7 +84,51 @@ def load_model(filepath, backbone_name='resnet50'):
         ValueError: In case of an invalid savefile.
     """
     from tensorflow import keras
-    return keras.models.load_model(filepath, custom_objects=backbone(backbone_name).custom_objects)
+    custom_objects = backbone(backbone_name).custom_objects
+
+    class _CompatBatchNormalization(keras.layers.BatchNormalization):
+        def __init__(self, *args, **kwargs):
+            kwargs.pop('freeze', None)
+            super().__init__(*args, **kwargs)
+
+    custom_objects['BatchNormalization'] = _CompatBatchNormalization
+
+    # PATCH: perbaiki config lama sebelum load.
+    # Model .h5 lama menyimpan parameter seperti axis BatchNormalization
+    # sebagai list (mis. [3]), sementara Keras versi baru mengharapkan int tunggal.
+    try:
+        import h5py
+        import json as _json
+
+        with h5py.File(filepath, 'r') as f:
+            raw_config = f.attrs.get('model_config')
+
+        if raw_config is not None:
+            if hasattr(raw_config, 'decode'):
+                raw_config = raw_config.decode('utf-8')
+            config_dict = _json.loads(raw_config)
+
+            def _fix_axis(obj):
+                if isinstance(obj, dict):
+                    if 'axis' in obj and isinstance(obj['axis'], list) and len(obj['axis']) == 1:
+                        obj['axis'] = obj['axis'][0]
+                    for v in obj.values():
+                        _fix_axis(v)
+                elif isinstance(obj, list):
+                    for item in obj:
+                        _fix_axis(item)
+
+            _fix_axis(config_dict)
+
+            model = keras.models.model_from_json(_json.dumps(config_dict), custom_objects=custom_objects)
+            model.load_weights(filepath)
+            return model
+    except Exception as e:
+        import traceback
+        raise RuntimeError("PATCH GAGAL: " + traceback.format_exc()) from e
+
+    # Fallback ke cara lama kalau patch di atas gagal karena alasan lain
+    return keras.models.load_model(filepath, custom_objects=custom_objects)
 
 
 def convert_model(model, nms=True, class_specific_filter=True, anchor_params=None, **kwargs):
