@@ -21,6 +21,8 @@
  ***************************************************************************/
  This script initializes the plugin, making it known to QGIS.
 """
+import os
+os.environ["TF_USE_LEGACY_KERAS"] = "1"
 
 __author__ = 'Muhammad Nurdin'
 __date__ = '2020-09-22'
