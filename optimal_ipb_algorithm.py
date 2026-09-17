@@ -49,7 +49,8 @@ from qgis.core import (QgsProcessing,
                        QgsProcessingParameterEnum,
                        QgsProcessingParameterNumber,
                        QgsProcessingParameterFeatureSink,
-                       QgsMessageLog)
+                       QgsMessageLog,
+                       QgsWkbTypes)
 
 import numpy as np
 import time
@@ -57,7 +58,36 @@ import pandas
 import os
 import inspect
 
-from lsnms import nms
+# from lsnms import nms  # dinonaktifkan - menyebabkan hang saat import numba/llvmlite di beberapa environment
+
+def nms(boxes, scores, iou_threshold=0.3, **kwargs):
+    """Pure NumPy NMS - pengganti lsnms.nms(), tanpa dependency numba/llvmlite"""
+    if len(boxes) == 0:
+        return np.array([], dtype=int)
+
+    x1, y1, x2, y2 = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+    areas = (x2 - x1) * (y2 - y1)
+    order = scores.argsort()[::-1]
+
+    keep = []
+    while order.size > 0:
+        i = order[0]
+        keep.append(i)
+
+        xx1 = np.maximum(x1[i], x1[order[1:]])
+        yy1 = np.maximum(y1[i], y1[order[1:]])
+        xx2 = np.minimum(x2[i], x2[order[1:]])
+        yy2 = np.minimum(y2[i], y2[order[1:]])
+
+        w = np.maximum(0.0, xx2 - xx1)
+        h = np.maximum(0.0, yy2 - yy1)
+        inter = w * h
+        iou = inter / (areas[i] + areas[order[1:]] - inter)
+
+        inds = np.where(iou <= iou_threshold)[0]
+        order = order[inds + 1]
+
+    return np.array(keep, dtype=int)
 from osgeo import gdal
 
 from qgis.PyQt.QtCore import QVariant
@@ -251,6 +281,20 @@ class OptimalIpbAlgorithm(QgsProcessingAlgorithm):
         datatype = ds.GetRasterBand(1).DataType
         minmaxlist = []
 
+        # PATCH sesuaikan ukuran window kalau raster lebih kecil dari 500x500
+        if width < winW:
+            winW = width
+        if height < winH:
+            winH = height
+        if winW < winH:
+            smaller_dim = winW
+        else:
+            smaller_dim = winH
+        stepSize = smaller_dim - 30
+        if stepSize < 1:
+            stepSize = 1
+        # END PATCH
+
         for bandId in range(ds.RasterCount):
             bandId = bandId + 1
             band = ds.GetRasterBand(bandId)
@@ -301,7 +345,7 @@ class OptimalIpbAlgorithm(QgsProcessingAlgorithm):
         # Prepare sink for output
         type_val = self.parameterAsDouble(parameters, self.TYPE, context)
         type_opt = geom_type(type_val)
-        (sink, dest_id) = self.parameterAsSink(parameters, self.OUTPUT, context, fields, type_opt, source.crs())
+        (sink, dest_id) = self.parameterAsSink(parameters, self.OUTPUT, context, fields, QgsWkbTypes.Type(type_opt), source.crs())
 
         for jk in range(new_boxes.shape[0]):
 
